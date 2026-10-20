@@ -1,0 +1,320 @@
+1. Apa nama database yang digunakan pada tutorial ini?
+Nama database: neo4j (database bawaan Neo4j).
+
+
+2. Akses lain untuk mengakses database lain dalam 1 instance
+
+a. Klausa Cypher USE di awal query:
+     USE tokoonline MATCH (n) RETURN count(n)
+b. Parameter driver Python:
+     driver.execute_query(query, database_="nama_db")
+     driver.session(database="nama_db")
+c. Neo4j Browser / cypher-shell:
+     :use nama_db
+d. DDL manajemen database (dijalankan dari database "system"):
+     CREATE DATABASE nama_db
+     SHOW DATABASES
+     DROP DATABASE nama_db
+Catatan: Community Edition hanya mengizinkan satu database pengguna
+(neo4j) ditambah system. Banyak database dalam satu instance
+membutuhkan Enterprise Edition.
+
+
+3. Jenis graf pertemanan yang dibuat
+Kode: MERGE (a)-[:KNOWS]->(friend)
+Hasil: Arthur -> Guinevere, Arthur -> Lancelot, Arthur -> Merlin.
+Jenis graf:
+ - Berarah (directed)  : relasi KNOWS punya arah (a)->(friend),
+                         tidak simetris.
+ - Tak berbobot        : relasi tidak punya properti bobot.
+ - Homogen             : satu label (Person) dan satu tipe relasi
+                         (KNOWS).
+ - Bentuk star (bintang): Arthur sebagai hub dengan derajat keluar 3,
+                         tanpa siklus.
+ - Model data          : labeled property graph.
+
+
+PERSIAPAN DATA DAN PEMODELAN GRAF
+
+
+1. Periode waktu sebagai filter data interaksi
+Periode yang dipilih (Opsi 3, total 15 hari, tahun 2015):
+ - P1 (Training): 1 - 8 September 2015
+ - P2 (Testing) : 9 - 15 September 2015
+Timestamp (milidetik) dikonversi dengan
+pd.to_datetime(df['timestamp'], unit='ms'), lalu difilter pada
+rentang masing-masing periode.
+
+
+2. Proses filter dan penyimpanan ke CSV
+File hasil: events_filtered.csv (P1 + P2), events_p1.csv, events_p2.csv
+Hasil:
+ - Data P1            : 141.038 baris
+ - Data P2            : 139.521 baris
+ - Total events_filtered: 280.559 baris
+Graf Neo4j hanya dibangun dari P1 (training). P2 dipakai sebagai
+ground truth pengujian sehingga tidak terjadi kebocoran data.
+
+Impor ke Neo4j (batch 1.000 baris, 142 batch):
+ - Constraint unik pada Visitor.visitorId dan Item.itemId.
+ - Event 'view' -> relasi VIEWED
+   Event 'addtocart' -> relasi ADDED_TO_CART
+   Event 'transaction' -> relasi BOUGHT (dengan transactionId).
+Verifikasi jumlah relasi (CSV P1 vs Neo4j), semuanya cocok:
+   VIEWED = 136.420 | ADDED_TO_CART = 3.532 | BOUGHT = 1.086
+
+
+3. Komposisi subgraph (Python API) dan penjelasan Cypher
+Query 1 (jumlah simpul per label):
+   MATCH (n) RETURN labels(n)[0] AS Label, count(n) AS JumlahNode
+ Penjelasan: MATCH (n) mencocokkan semua simpul; labels(n)[0]
+ mengambil label pertama tiap simpul; count(n) dengan pengelompokan
+ otomatis per label menghitung jumlah simpul tiap label.
+
+Query 2 (jumlah relasi per tipe):
+   MATCH ()-[r]->() RETURN type(r) AS TipeRelasi, count(r) AS JumlahRelasi
+ Penjelasan: pola ()-[r]->() mencocokkan semua relasi berarah;
+ type(r) mengambil tipe relasi; count(r) menghitung jumlahnya per tipe.
+
+Hasil:
+ Simpul:
+   - Visitor : 82.958
+   - Item    : 51.788
+ Relasi:
+   - VIEWED        : 136.420
+   - ADDED_TO_CART :   3.532
+   - BOUGHT        :   1.086
+   (Total relasi = 141.038, sama dengan jumlah baris P1)
+Interpretasi: sekitar 96,7% interaksi berupa view, 2,5% add-to-cart,
+dan 0,8% pembelian (pola funnel khas e-commerce).
+
+
+4. VSM terhadap simpul User
+Query pengambilan data interaksi:
+   MATCH (v:Visitor)-[r]->(i:Item)
+   RETURN v.visitorId AS user_id, i.itemId AS item_id, count(r) AS weight
+ Penjelasan: setiap pasangan (visitor, item) dihitung jumlah relasinya
+ (semua tipe event) sebagai bobot sel matriks.
+
+Matriks VSM User (baris = User, kolom = Item), format sparse CSR:
+   1. Dimensi/Shape  : 82.958 User x 51.788 Item
+   2. Elemen non-zero: 114.068
+   3. Sparsity       : 99,9973%
+Karakteristik:
+ - Setiap user adalah vektor berdimensi 51.788 (jumlah item).
+ - Sangat sparse; rata-rata hanya sekitar 1,4 item per user dan
+   median 1 item, sehingga banyak vektor user nyaris kosong
+   (masalah cold-start).
+ - Nilai sel = jumlah interaksi user terhadap item.
+ - Selisih 141.038 relasi dan 114.068 pasangan unik menunjukkan
+   ada interaksi berulang pada pasangan user-item yang sama.
+Plot NetworkX: proyeksi graf User-User dari 30 user paling aktif
+(sisi menghubungkan dua user yang berinteraksi dengan item yang
+sama). Karena sampel dari user paling aktif, graf cenderung rapat
+sehingga kurang informatif untuk membedakan user.
+
+
+5. VSM terhadap simpul Item
+Matriks VSM Item = transpos matriks VSM User (baris = Item,
+kolom = User):
+   1. Dimensi/Shape  : 51.788 Item x 82.958 User
+   2. Elemen non-zero: 114.068
+   3. Sparsity       : 99,9973%
+Karakteristik:
+ - Setiap item adalah vektor berdimensi 82.958 (jumlah user).
+ - nnz dan sparsity sama dengan VSM User karena hanya transpos;
+   perbedaannya ada pada distribusi derajat dan arah proyeksi.
+ - Rata-rata sekitar 2,2 user per item, median 1.
+Plot NetworkX: proyeksi graf Item-Item dari 30 item paling populer.
+Item populer membentuk gugus rapat (sering dilihat user yang sama),
+sedangkan item long-tail terpisah.
+
+
+6. Proyeksi mana yang lebih baik (efektif/efisien)?
+Perbandingan kuantitatif (dari output kode):
+
+                         User-User   Item-Item
+ Jumlah simpul             82.958      51.788
+ Sisi (batas atas)        439.309     548.743
+ Simpul terisolasi         22.670      27.839
+ % terisolasi               27,33%      53,76%
+ Median derajat vektor       1,00        1,00
+
+Keterangan: sisi (batas atas) dihitung dengan d(d-1)/2 per simpul
+perantara, sehingga merupakan batas atas.
+
+Pembahasan:
+ - Simpul    : Item-Item lebih sedikit (51.788 vs 82.958).
+ - Sisi      : User-User lebih sedikit (439.309 vs 548.743). Sisi
+   Item-Item membengkak kemungkinan karena segelintir user dengan
+   interaksi sangat banyak (heavy user/bot); hal ini bisa diatasi
+   dengan memfilter user tersebut sebelum proyeksi.
+ - Terisolasi: User-User lebih baik (27,33% vs 53,76%). Pada Item-Item
+   banyak item long-tail hanya disentuh user yang hanya berinteraksi
+   dengan satu item.
+ - Bukti per vektor: seri (median derajat sama-sama 1).
+
+Kesimpulan:
+Proyeksi Item-Item dipilih untuk perhitungan similarity berikutnya,
+dengan pertimbangan:
+ 1. Jumlah simpul lebih sedikit (matriks lebih ringkas).
+ 2. Kegunaan: similarity antar-item bersifat lebih stabil/tahan lama,
+    dapat disimpan sebagai relasi SIMILAR_TO pada graf dan dipakai
+    ulang untuk semua user.
+ 3. Bukti per vektor setara dengan proyeksi User-User.
+Kelemahan yang perlu dicatat: sisi (batas atas) lebih banyak dan
+persentase simpul terisolasi lebih tinggi (53,76%), sehingga
+cakupan similarity untuk item long-tail rendah. Jadi unggulan
+Item-Item terutama pada kegunaan dan jumlah simpul, bukan pada
+seluruh kriteria efisiensi.
+
+
+7. Similarity pada graf terproyeksi
+Item acuan: item dengan interaksi terbanyak, yaitu Item 187946.
+
+(a) CYPHER untuk 5 record similarity tertinggi (Jaccard):
+
+   MATCH (i1:Item {itemId: $ref_id})<-[:VIEWED|ADDED_TO_CART|BOUGHT]-(v:Visitor)
+         -[:VIEWED|ADDED_TO_CART|BOUGHT]->(i2:Item)
+   WHERE i1 <> i2
+   WITH i1, i2, count(DISTINCT v) AS common_visitors
+   MATCH (i1)<-[:VIEWED|ADDED_TO_CART|BOUGHT]-(v1:Visitor)
+   WITH i1, i2, common_visitors, count(DISTINCT v1) AS visitors_i1
+   MATCH (i2)<-[:VIEWED|ADDED_TO_CART|BOUGHT]-(v2:Visitor)
+   WITH i1, i2, common_visitors, visitors_i1, count(DISTINCT v2) AS visitors_i2
+   WITH i1, i2, common_visitors,
+        (visitors_i1 + visitors_i2 - common_visitors) AS union_visitors
+   WITH i1, i2, (1.0 * common_visitors / union_visitors) AS similarity_score
+   ORDER BY similarity_score DESC
+   LIMIT 5
+   MERGE (i1)-[s:SIMILAR_TO]->(i2)
+   SET s.score = round(similarity_score, 4)
+   RETURN i1.itemId AS ItemAcuan, i2.itemId AS ItemMirip,
+          s.score AS SimilarityScore
+
+ Penjelasan: mencari item i2 yang dikunjungi visitor yang sama dengan
+ item acuan i1; menghitung visitor bersama (irisan), jumlah visitor
+ tiap item, lalu Jaccard = irisan / gabungan. Diurutkan menurun,
+ diambil 5 teratas.
+
+ Hasil (Top 5 Jaccard):
+   ItemAcuan  ItemMirip  SimilarityScore
+      187946     133549           0,0061
+      187946     181852           0,0031
+      187946      36956           0,0031
+      187946      57245           0,0031
+      187946     372855           0,0030
+
+ Validasi dengan Python (matriks VSM Item, Jaccard biner):
+   nilai Jaccard Cypher = nilai Jaccard Python -> konsisten (True).
+ Pembanding cosine (vektor berbobot, L2):
+   Top-5 Cosine: 181852 (0,0526), 101050 (0,0483), 133549 (0,0344),
+                 57245 (0,0322), 372855 (0,0126).
+ Catatan: Jaccard dan cosine memberi urutan berbeda karena cosine
+ memakai bobot interaksi, sedangkan Jaccard hanya ada/tidaknya.
+ Nilai keduanya kecil, mencerminkan data yang sangat sparse.
+
+(b) Penulisan kembali nilai similarity ke graf:
+   MERGE (i1)-[s:SIMILAR_TO]->(i2) SET s.score = round(similarity_score, 4)
+ membuat relasi SIMILAR_TO beserta properti score di Neo4j. Properti
+ cosine ditambahkan dengan:
+   UNWIND $rows AS p
+   MATCH (a:Item {itemId: p.ref})-[r:SIMILAR_TO]->(b:Item {itemId: p.item})
+   SET r.cosine = round(p.cosine, 4)
+ Bukti hasil query (relasi tersimpan di graf):
+   MATCH (i1:Item {itemId: 187946})-[s:SIMILAR_TO]->(i2:Item)
+   RETURN i1.itemId AS source, i2.itemId AS target, s.score AS score
+ mengembalikan 5 relasi seperti tabel di atas.
+
+
+8. Kondisi graf sebelum dan sesudah similarity-
+SEBELUM (hanya relasi interaksi Visitor -> Item):
+   MATCH (i:Item {itemId: 187946})<-[r]-(v:Visitor)
+   RETURN i, r, v LIMIT 10;
+ Graf: Item 187946 (merah) dihubungkan oleh node Visitor melalui
+ relasi VIEWED/ADDED_TO_CART/BOUGHT; belum ada relasi antar-Item.
+
+SESUDAH (ada relasi SIMILAR_TO antar Item):
+   MATCH (i1:Item {itemId: 187946})-[r:SIMILAR_TO]->(i2:Item)
+   RETURN i1, r, i2;
+ Graf: Item 187946 (merah) memiliki 5 relasi SIMILAR_TO berarah ke
+ item mirip (hijau) dengan label skor (0,0061; 0,0031; 0,0031;
+ 0,0031; 0,0030). Visualisasi keduanya ada pada plot NetworkX di
+ notebook (sel Soal 8).
+
+
+ ANALYTICS 
+
+
+1. Rekomendasi KNN untuk user acak
+Proses pemilihan acak (reproducible):
+ - Kandidat: user yang aktif di P1 dan P2, memiliki minimal 3 item
+   berbeda di P1, dan ada di matriks VSM.
+ - Urutan kandidat diacak dengan np.random.seed(42) dan
+   np.random.permutation; user pertama yang memiliki ground truth P2
+   (item baru) dan minimal 3 rekomendasi dipilih.
+ Hasil: Visitor ID 287281.
+
+(a) Skrip Python rekomendasi KNN (ringkasan):
+ - Model: NearestNeighbors(metric='cosine', algorithm='brute')
+   dilatih pada vsm_user_matrix (data P1).
+ - Fungsi recommend_knn(u_row, k=5, topn=5):
+     * mencari tetangga terdekat berdasarkan cosine;
+     * hanya mempertahankan tetangga yang membawa >= 1 item baru bagi
+       user target, lalu mengambil k=5 teratas;
+     * skor item = jumlah (similarity tetangga x bobot interaksi);
+     * item yang sudah pernah diinteraksikan user diberi skor 0;
+     * mengembalikan top-N item berskor tertinggi.
+
+(b) Hasil untuk k = 5:
+ Item riwayat P1 user 287281: 17069, 21408, 231501, 386988, 448600
+
+ Tetangga terdekat (k=5):
+   - Visitor 954160   (cosine = 0,4411)
+   - Visitor 1145341  (cosine = 0,3162)
+   - Visitor 442349   (cosine = 0,3162)
+   - Visitor 246888   (cosine = 0,2981)
+   - Visitor 164990   (cosine = 0,2582)
+
+ Kandidat item (skor):
+   Rank 1: Item 229940 (0,5963)
+   Rank 2: Item 334401 (0,4411)
+   Rank 3: Item 34532  (0,3162)
+   Rank 4: Item 392898 (0,3162)
+   Rank 5: Item 346673 (0,2981)
+
+ 3 ITEM YANG DIIKLANKAN untuk User 287281:
+   [1] Item 229940
+   [2] Item 334401
+   [3] Item 34532
+
+
+2. Evaluasi metrik (Top-5 rekomendasi)
+Ground truth (item aktual user di P2 yang belum ada di riwayat P1),
+11 item:
+   104800, 119460, 260488, 182445, 175600, 89042,
+   176630, 215992, 362202, 63547, 351516
+Top-5 rekomendasi:
+   229940, 334401, 34532, 392898, 346673
+
+(a) Hit@5
+   Hit@5 = 1 jika ada minimal satu rekomendasi top-5 yang ada pada
+   ground truth, selain itu 0.
+   Vektor hit per rank (1..5) = [0, 0, 0, 0, 0]
+   Hit@5 = 0,0000
+
+(b) NDCG@5
+   DCG@5  = sum( rel_i / log2(i + 1) ), i = 1..5 = 0,0000
+   IDCG@5 = 1/log2(2) + 1/log2(3) + 1/log2(4) + 1/log2(5) + 1/log2(6)
+          = 1 + 0,6309 + 0,5 + 0,4307 + 0,3869 = 2,9485
+   NDCG@5 = DCG@5 / IDCG@5 = 0 / 2,9485 = 0,0000
+
+Interpretasi:
+ Tidak ada rekomendasi top-5 yang cocok dengan item aktual di P2,
+ sehingga Hit@5 dan NDCG@5 bernilai 0. Hasil ini berasal dari satu
+ user saja sehingga belum mewakili kualitas model secara umum.
+ Faktor yang berpengaruh: data sangat sparse (sparsity 99,9973%),
+ riwayat user hanya 5 item, kemiripan dengan tetangga rendah
+ (cosine 0,26 - 0,44), dan perilaku user dapat berubah antar periode.
+ Untuk evaluasi yang lebih andal sebaiknya dirata-ratakan pada
+ banyak user dan dibandingkan dengan baseline popularitas.
