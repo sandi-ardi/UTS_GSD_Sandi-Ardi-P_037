@@ -198,9 +198,6 @@ Tidak ada item rekomendasi yang muncul pada data uji user tersebut. Evaluasi dil
 * **NDCG@5:** $\dfrac{\text{DCG@5}}{\text{IDCG@5}}$ dengan relevansi biner dan $\text{DCG}=\sum_{r}\dfrac{rel_r}{\log_2(r+1)}$.
 
 ## Catatan dan Keterbatasan
-
-* **Kredensial:** password Neo4j dan path pribadi masih tertulis di dalam sel. Hapus atau ganti sebelum notebook diunggah ke repositori publik.
-* **Peringatan *deprecated*:** query impor memakai `CALL { ... UNION ALL ... }` tanpa *scope clause*. Peringatannya disembunyikan dengan `notifications_min_severity="OFF"`; fungsinya tetap benar.
 * **Konsistensi metode:** kesimpulan bagian 8 memilih proyeksi Item-Item, sedangkan rekomendasi pada bagian 11 memakai KNN berbasis **user**. Keduanya sah, tetapi sebaiknya dijelaskan di laporan alasan perbedaannya.
 * **Filter waktu:** batas atas `<= 23:59:59` melewatkan event pada milidetik terakhir hari terakhir tiap periode (dampaknya kecil).
 * **Evaluasi:** hanya satu user, sehingga Hit@5 dan NDCG@5 sangat bergantung pada sampel. Untuk kesimpulan yang lebih kuat, rata-ratakan pada banyak user dan bandingkan dengan *baseline* popularitas.
