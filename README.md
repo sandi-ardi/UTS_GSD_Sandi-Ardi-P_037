@@ -191,11 +191,11 @@ Tidak ada item rekomendasi yang muncul pada data uji user tersebut. Evaluasi dil
 ## Metode Singkat
 
 * **Pembobotan VSM:** nilai sel = jumlah interaksi user terhadap item (`count(r)`).
-* **Jaccard:** $J(i_1,i_2)=\dfrac{|N(i_1)\cap N(i_2)|}{|N(i_1)\cup N(i_2)|}$ pada himpunan visitor; **Cosine** dihitung pada vektor item yang dinormalisasi L2.
+* **Jaccard:** pada himpunan visitor; **Cosine** dihitung pada vektor item yang dinormalisasi L2.
 * **KNN (k = 5):** *user-based*. Tetangga adalah 5 user dengan cosine tertinggi terhadap user target yang membawa minimal satu item baru. Skor item = jumlah (similarity tetangga x bobot interaksi), item yang sudah ada di riwayat P1 dikeluarkan, lalu diambil Top-5.
 * **Pemilihan user:** acak terkontrol (`np.random.seed(42)`) dari user yang aktif di P1 dan P2, punya minimal 3 item di P1, memiliki *ground truth* item baru di P2, serta bisa diberi minimal 3 rekomendasi.
 * **Hit@5:** bernilai 1 jika ada irisan Top-5 dengan ground truth.
-* **NDCG@5:** $\dfrac{\text{DCG@5}}{\text{IDCG@5}}$ dengan relevansi biner dan $\text{DCG}=\sum_{r}\dfrac{rel_r}{\log_2(r+1)}$.
+* **NDCG@5:** relevansi biner
 
 ## Catatan dan Keterbatasan
 * **Konsistensi metode:** kesimpulan bagian 8 memilih proyeksi Item-Item, sedangkan rekomendasi pada bagian 11 memakai KNN berbasis **user**. Keduanya sah, tetapi sebaiknya dijelaskan di laporan alasan perbedaannya.
